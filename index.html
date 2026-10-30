@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Nobody is Perfect - Begleiter</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="#1e293b">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card: #1e293b;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --correct: #22c55e;
+      --fake: #e2e8f0;
+    }
+    * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    body { background: var(--bg); color: var(--text); margin: 0; padding: 16px; display: flex; justify-content: center; }
+    .container { width: 100%; max-width: 480px; }
+    h1, h2, h3 { text-align: center; margin-top: 0; }
+    .card { background: var(--card); border-radius: 12px; padding: 20px; margin-bottom: 16px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.3); }
+    input, textarea, button { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #334155; background: #0f172a; color: var(--text); font-size: 1rem; margin-bottom: 12px; }
+    button { background: var(--accent); color: #0f172a; font-weight: bold; border: none; cursor: pointer; transition: 0.2s; }
+    button:active { background: var(--accent-hover); transform: scale(0.98); }
+    button.secondary { background: #334155; color: var(--text); }
+    .badge { display: inline-block; padding: 4px 8px; border-radius: 6px; font-size: 0.8rem; font-weight: bold; background: #334155; }
+    .badge.leader { background: #f59e0b; color: #000; }
+    .answer-card { background: #334155; border-radius: 8px; padding: 14px; margin-bottom: 10px; font-size: 1.15rem; line-height: 1.4; }
+    .answer-author { font-size: 0.85rem; color: var(--text-muted); margin-top: 6px; display: none; }
+    .revealed .answer-author { display: block; }
+    .revealed .correct-answer { border: 2px solid var(--correct); background: rgba(34, 197, 94, 0.1); }
+    .player-list { list-style: none; padding: 0; margin: 0; }
+    .player-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155; }
+    .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; background: #ef4444; }
+    .status-dot.ready { background: var(--correct); }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <!-- Screen: Login / Raumauswahl -->
+  <div id="screen-auth" class="card">
+    <h2>Nobody is Perfect</h2>
+    <input type="text" id="username" placeholder="Dein Name" maxlength="15">
+    <input type="text" id="roomCode" placeholder="Raum-Code (z.B. NIP42)" style="text-transform: uppercase;">
+    <button onclick="joinRoom()">Raum betreten / erstellen</button>
+  </div>
+
+  <!-- Screen: Lobby & Spiel -->
+  <div id="screen-game" style="display: none;">
+    <div class="card" style="display: flex; justify-content: space-between; align-items: center;">
+      <div>
+        <span style="color: var(--text-muted);">Raum:</span> <strong id="lbl-room"></strong>
+      </div>
+      <div>
+        <span id="role-badge" class="badge">Mitspieler</span>
+      </div>
+    </div>
+
+    <!-- ANSICHT FÜR DEN SPIELLEITER -->
+    <div id="view-leader" style="display: none;">
+      <div class="card">
+        <h3>Du bist der Spielleiter! 👑</h3>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">Lies die Frage vor und trage hier die <b>echte</b> Lösung ein:</p>
+        <textarea id="correctAnswerInput" rows="2" placeholder="Wahre Antwort von der Karte..."></textarea>
+        <button id="btn-save-correct" onclick="submitCorrectAnswer()">Echte Antwort einloggen</button>
+      </div>
+
+      <div class="card">
+        <h3>Eingegangene Antworten (<span id="count-answers">0</span>/<span id="count-players">0</span>)</h3>
+        <div id="answers-container"><i>Warte auf Antworten...</i></div>
+        <button id="btn-reveal" style="display: none; margin-top: 12px;" onclick="revealAnswers()">Auflösen & Autoren zeigen</button>
+        <button id="btn-next-round" style="display: none; margin-top: 6px;" class="secondary" onclick="nextRound()">Nächste Runde (Spielleiter weitergeben)</button>
+      </div>
+    </div>
+
+    <!-- ANSICHT FÜR NORMALE SPIELER -->
+    <div id="view-player" style="display: none;">
+      <div class="card">
+        <h3>Deine erfundene Antwort</h3>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">Spielleiter ist aktuell: <b id="current-leader-name">-</b></p>
+        <textarea id="playerAnswerInput" rows="3" placeholder="Tippe hier deine glaubhafte Fake-Antwort ein..."></textarea>
+        <button id="btn-submit-player" onclick="submitPlayerAnswer()">Antwort absenden</button>
+        <p id="player-status-msg" style="text-align: center; color: var(--accent); display: none;">Antwort übermittelt! Warte auf den Spielleiter...</p>
+      </div>
+    </div>
+
+    <!-- Mitspieler-Status -->
+    <div class="card">
+      <h3>Mitspieler</h3>
+      <ul id="player-list" class="player-list"></ul>
+    </div>
+  </div>
+</div>
+
+<script>
+  let client, myName, room;
+  let players = []; 
+  let currentLeaderIndex = 0;
+  let roundAnswers = []; // { text, author, isCorrect }
+  let hasSubmitted = false;
+
+  function joinRoom() {
+    myName = document.getElementById('username').value.trim();
+    room = document.getElementById('roomCode').value.trim().toUpperCase();
+    if (!myName || !room) return alert('Bitte Name und Raum eingeben!');
+
+    document.getElementById('screen-auth').style.display = 'none';
+    document.getElementById('screen-game').style.display = 'block';
+    document.getElementById('lbl-room').innerText = room;
+
+    initMQTT();
+  }
+
+  function initMQTT() {
+    const clientId = "nip_" + Math.random().toString(16).substr(2, 8);
+    // Verbindung über öffentlichen WebSocket-Broker (HiveMQ)
+    client = new Paho.MQTT.Client("broker.hivemq.com", 8884, clientId);
+    client.onMessageArrived = onMessage;
+
+    client.connect({
+      useSSL: true,
+      onSuccess: () => {
+        client.subscribe(`nip/${room}/#`);
+        sendMsg("join", { name: myName });
+      }
+    });
+  }
+
+  function sendMsg(type, payload) {
+    const message = new Paho.MQTT.Message(JSON.stringify({ type, sender: myName, ...payload }));
+    message.destinationName = `nip/${room}/${type}`;
+    client.send(message);
+  }
+
+  function onMessage(message) {
+    const data = JSON.parse(message.payloadString);
+    const subTopic = message.destinationName.split('/').pop();
+
+    if (subTopic === 'join') {
+      if (!players.includes(data.name)) {
+        players.push(data.name);
+        renderPlayers();
+      }
+      // Wenn ich Spielleiter bin, sende den aktuellen Zustand an den Neuen
+      if (isLeader()) {
+        sendMsg("sync_state", { players, currentLeaderIndex });
+      }
+    }
+
+    if (subTopic === 'sync_state') {
+      players = data.players;
+      currentLeaderIndex = data.currentLeaderIndex;
+      renderPlayers();
+      updateRoleViews();
+    }
+
+    if (subTopic === 'answer_submitted') {
+      // Nur der Spielleiter sammelt die Antworten im Speicher
+      if (isLeader()) {
+        roundAnswers.push({ text: data.text, author: data.sender, isCorrect: data.isCorrect || false });
+        updateLeaderAnswerCount();
+      }
+      updatePlayerReadyState(data.sender);
+    }
+
+    if (subTopic === 'broadcast_answers') {
+      // Spielleiter hat alle Antworten gemischt veröffentlicht
+      displayAnswers(data.answers, false);
+    }
+
+    if (subTopic === 'reveal') {
+      displayAnswers(data.answers, true);
+    }
+
+    if (subTopic === 'next_round') {
+      currentLeaderIndex = data.newLeaderIndex;
+      hasSubmitted = false;
+      roundAnswers = [];
+      resetRoundUI();
+      updateRoleViews();
+      renderPlayers();
+    }
+  }
+
+  function isLeader() {
+    return players[currentLeaderIndex] === myName;
+  }
+
+  function updateRoleViews() {
+    const leaderName = players[currentLeaderIndex] || 'Niemand';
+    document.getElementById('current-leader-name').innerText = leaderName;
+
+    if (isLeader()) {
+      document.getElementById('role-badge').innerText = "Spielleiter 👑";
+      document.getElementById('role-badge').className = "badge leader";
+      document.getElementById('view-leader').style.display = 'block';
+      document.getElementById('view-player').style.display = 'none';
+    } else {
+      document.getElementById('role-badge').innerText = "Mitspieler";
+      document.getElementById('role-badge').className = "badge";
+      document.getElementById('view-leader').style.display = 'none';
+      document.getElementById('view-player').style.display = 'block';
+    }
+  }
+
+  function submitPlayerAnswer() {
+    const text = document.getElementById('playerAnswerInput').value.trim();
+    if (!text) return alert("Bitte eine Antwort eingeben!");
+    sendMsg("answer_submitted", { text, isCorrect: false });
+    document.getElementById('btn-submit-player').disabled = true;
+    document.getElementById('player-status-msg').style.display = 'block';
+  }
+
+  function submitCorrectAnswer() {
+    const text = document.getElementById('correctAnswerInput').value.trim();
+    if (!text) return alert("Bitte die echte Antwort eintragen!");
+    roundAnswers.push({ text, author: "SPIELLEITUNG (Wahr)", isCorrect: true });
+    document.getElementById('btn-save-correct').disabled = true;
+    updateLeaderAnswerCount();
+  }
+
+  function updateLeaderAnswerCount() {
+    document.getElementById('count-answers').innerText = roundAnswers.length;
+    document.getElementById('count-players').innerText = players.length;
+
+    // Sobald alle Mitspieler + die echte Antwort da sind:
+    if (roundAnswers.length >= players.length) {
+      // Antworten mischen (Fisher-Yates)
+      const shuffled = [...roundAnswers].sort(() => Math.random() - 0.5);
+      roundAnswers = shuffled;
+      sendMsg("broadcast_answers", { answers: shuffled });
+      document.getElementById('btn-reveal').style.display = 'block';
+    }
+  }
+
+  function displayAnswers(answers, isRevealed) {
+    const container = document.getElementById('answers-container');
+    container.innerHTML = "";
+    if (isRevealed) container.classList.add('revealed');
+    else container.classList.remove('revealed');
+
+    answers.forEach((ans, idx) => {
+      const div = document.createElement('div');
+      div.className = `answer-card ${ans.isCorrect ? 'correct-answer' : ''}`;
+      div.innerHTML = `
+        <div><b>${idx + 1}.</b> ${escapeHtml(ans.text)}</div>
+        <div class="answer-author">${ans.isCorrect ? '⭐ RICHTIGE ANTWORT' : 'Autor: ' + escapeHtml(ans.author)}</div>
+      `;
+      container.appendChild(div);
+    });
+  }
+
+  function revealAnswers() {
+    sendMsg("reveal", { answers: roundAnswers });
+    document.getElementById('btn-reveal').style.display = 'none';
+    document.getElementById('btn-next-round').style.display = 'block';
+  }
+
+  function nextRound() {
+    const nextIdx = (currentLeaderIndex + 1) % players.length;
+    sendMsg("next_round", { newLeaderIndex: nextIdx });
+  }
+
+  function resetRoundUI() {
+    document.getElementById('playerAnswerInput').value = "";
+    document.getElementById('correctAnswerInput').value = "";
+    document.getElementById('btn-submit-player').disabled = false;
+    document.getElementById('btn-save-correct').disabled = false;
+    document.getElementById('player-status-msg').style.display = 'none';
+    document.getElementById('btn-reveal').style.display = 'none';
+    document.getElementById('btn-next-round').style.display = 'none';
+    document.getElementById('answers-container').innerHTML = "<i>Warte auf Antworten...</i>";
+    document.getElementById('count-answers').innerText = "0";
+  }
+
+  function renderPlayers() {
+    const list = document.getElementById('player-list');
+    list.innerHTML = "";
+    players.forEach((p, idx) => {
+      const li = document.createElement('li');
+      li.className = 'player-item';
+      li.innerHTML = `
+        <span>${escapeHtml(p)} ${idx === currentLeaderIndex ? '👑' : ''}</span>
+        <span id="dot-${p}" class="status-dot"></span>
+      `;
+      list.appendChild(li);
+    });
+    document.getElementById('count-players').innerText = players.length;
+  }
+
+  function updatePlayerReadyState(player) {
+    const dot = document.getElementById(`dot-${player}`);
+    if (dot) dot.classList.add('ready');
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+</script>
+</body>
+</html>
