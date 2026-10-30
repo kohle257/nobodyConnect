@@ -13,7 +13,9 @@
   <meta name="apple-mobile-web-app-title" content="Nobody is Perfect">
   <link rel="apple-touch-icon" href="icon-192.png">
 
+  <!-- MQTT & QR-Code Bibliotheken -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
   
   <style>
     :root {
@@ -52,7 +54,7 @@
     button:active { background: var(--accent-hover); transform: scale(0.98); }
     button.secondary { background: #334155; color: var(--text); }
     
-    /* Dezente Kopfzeile: Alles in einer einzigen unaufdringlichen Leiste */
+    /* Dezente Kopfzeile */
     .top-meta-bar {
       display: flex;
       justify-content: space-between;
@@ -64,7 +66,7 @@
     .meta-group {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 8px;
     }
     .meta-group b {
       color: var(--text);
@@ -73,6 +75,17 @@
     .badge { display: inline-block; padding: 2px 7px; border-radius: 6px; font-size: 0.75rem; font-weight: bold; background: #334155; color: var(--text); }
     .badge.leader { background: var(--gold); color: #000; }
     
+    .btn-icon {
+      background: #334155;
+      color: var(--text);
+      border: 1px solid #475569;
+      width: auto;
+      margin: 0;
+      padding: 3px 8px;
+      font-size: 0.85rem;
+      border-radius: 6px;
+      cursor: pointer;
+    }
     .btn-leave {
       background: transparent;
       color: var(--text-muted);
@@ -95,6 +108,38 @@
     .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; background: #64748b; }
     .status-dot.ready { background: var(--correct); }
     .btn-make-leader { width: auto; margin: 0; padding: 6px 10px; font-size: 0.75rem; background: #334155; color: #f8fafc; border: 1px solid #475569; }
+
+    /* Modal Overlay für QR-Code */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.85);
+      backdrop-filter: blur(4px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+      padding: 20px;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal-card {
+      background: var(--card);
+      border-radius: 16px;
+      padding: 24px;
+      text-align: center;
+      max-width: 320px;
+      width: 100%;
+      border: 1px solid #334155;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    #qrcode-container {
+      display: flex;
+      justify-content: center;
+      margin: 16px 0;
+      padding: 12px;
+      background: white;
+      border-radius: 10px;
+    }
   </style>
 </head>
 <body>
@@ -103,17 +148,18 @@
   <!-- Auth Screen -->
   <div id="screen-auth" class="card" style="margin-top: 20px;">
     <h2>Nobody is Perfect</h2>
-    <input type="text" id="username" placeholder="Dein Name" maxlength="15">
+    <input type="text" id="username" placeholder="Dein Name" maxlength="15" autofocus>
     <input type="text" id="roomCode" placeholder="Raum-Code (z.B. NIP42)" style="text-transform: uppercase;">
     <button onclick="handleJoinClick()">Raum betreten / erstellen</button>
   </div>
 
   <!-- Game Screen -->
   <div id="screen-game" style="display: none;">
-    <!-- Dezente Meta-Zeile: Raum und Spielername direkt nebeneinander -->
+    <!-- Dezente Meta-Zeile mit QR-Button -->
     <div class="top-meta-bar">
       <div class="meta-group">
         <span>Raum: <b id="lbl-room"></b></span>
+        <button class="btn-icon" onclick="openQrModal()" title="QR-Code zum Einladen anzeigen">📱 QR</button>
         <span>•</span>
         <span>Ich: <b id="lbl-player-name"></b></span>
         <span id="role-badge" class="badge">Mitspieler</span>
@@ -160,6 +206,17 @@
   </div>
 </div>
 
+<!-- QR-CODE MODAL -->
+<div id="qr-modal" class="modal-overlay" onclick="closeQrModal(event)">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <h3 style="margin-bottom: 4px;">Mitspieler einladen</h3>
+    <p style="color: var(--text-muted); font-size: 0.85rem; margin: 0;">Mit der Handykamera scannen, um beizutreten:</p>
+    <div id="qrcode-container"></div>
+    <div style="font-size: 0.9rem; margin-bottom: 16px;">Raum-Code: <b id="qr-room-lbl"></b></div>
+    <button class="secondary" onclick="closeQrModal()">Schließen</button>
+  </div>
+</div>
+
 <script>
   let client = null;
   let myName = '';
@@ -168,11 +225,11 @@
   let currentLeaderName = '';
   let roundAnswers = []; 
   let submittedPlayers = [];
+  let qrCodeInstance = null;
 
   const STORAGE_KEY_NAME = 'nip_player_name';
   const STORAGE_KEY_ROOM = 'nip_room_code';
 
-  // PWA Service Worker Registrierung
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('./sw.js').catch(() => {});
@@ -180,13 +237,26 @@
   }
 
   window.addEventListener('DOMContentLoaded', () => {
-    const savedName = sessionStorage.getItem(STORAGE_KEY_NAME);
-    const savedRoom = sessionStorage.getItem(STORAGE_KEY_ROOM);
+    // 1. Prüfen, ob Raum per URL-Parameter übergeben wurde (Scan via QR-Code)
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomParam = urlParams.get('room');
 
-    if (savedName && savedRoom) {
-      document.getElementById('username').value = savedName;
-      document.getElementById('roomCode').value = savedRoom;
-      joinRoom(savedName, savedRoom);
+    if (roomParam) {
+      document.getElementById('roomCode').value = roomParam.toUpperCase();
+      document.getElementById('roomCode').readOnly = true; // Sperren, damit kein Tippfehler passiert
+      document.getElementById('username').focus();
+    } else {
+      const savedRoom = sessionStorage.getItem(STORAGE_KEY_ROOM);
+      if (savedRoom) document.getElementById('roomCode').value = savedRoom;
+    }
+
+    const savedName = sessionStorage.getItem(STORAGE_KEY_NAME);
+    if (savedName) document.getElementById('username').value = savedName;
+
+    // Automatischer Reconnect bei Refresh
+    const effectiveRoom = roomParam || sessionStorage.getItem(STORAGE_KEY_ROOM);
+    if (savedName && effectiveRoom) {
+      joinRoom(savedName, effectiveRoom.toUpperCase());
     }
   });
 
@@ -216,12 +286,38 @@
   }
 
   function leaveRoom() {
-    sessionStorage.removeItem(STORAGE_KEY_NAME);
     sessionStorage.removeItem(STORAGE_KEY_ROOM);
     if (client && client.isConnected()) {
       client.disconnect();
     }
-    location.reload();
+    // URL-Parameter entfernen beim Verlassen
+    window.location.href = window.location.pathname;
+  }
+
+  // QR-Code Generierung & Modal
+  function openQrModal() {
+    const modal = document.getElementById('qr-modal');
+    const container = document.getElementById('qrcode-container');
+    document.getElementById('qr-room-lbl').innerText = room;
+
+    container.innerHTML = "";
+    // Erzeugt die genaue URL mit ?room=ROOMCODE
+    const joinUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(room)}`;
+
+    qrCodeInstance = new QRCode(container, {
+      text: joinUrl,
+      width: 190,
+      height: 190,
+      colorDark : "#0f172a",
+      colorLight : "#ffffff",
+      correctLevel : QRCode.CorrectLevel.M
+    });
+
+    modal.classList.add('active');
+  }
+
+  function closeQrModal() {
+    document.getElementById('qr-modal').classList.remove('active');
   }
 
   function initMQTT() {
