@@ -17,6 +17,7 @@
       --text-muted: #94a3b8;
       --correct: #22c55e;
       --fake: #e2e8f0;
+      --gold: #f59e0b;
     }
     * { box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     body { background: var(--bg); color: var(--text); margin: 0; padding: 16px; display: flex; justify-content: center; }
@@ -27,16 +28,21 @@
     button { background: var(--accent); color: #0f172a; font-weight: bold; border: none; cursor: pointer; transition: 0.2s; }
     button:active { background: var(--accent-hover); transform: scale(0.98); }
     button.secondary { background: #334155; color: var(--text); }
+    button.danger { background: #b91c1c; color: white; }
     .badge { display: inline-block; padding: 4px 8px; border-radius: 6px; font-size: 0.8rem; font-weight: bold; background: #334155; }
-    .badge.leader { background: #f59e0b; color: #000; }
+    .badge.leader { background: var(--gold); color: #000; }
     .answer-card { background: #334155; border-radius: 8px; padding: 14px; margin-bottom: 10px; font-size: 1.15rem; line-height: 1.4; }
     .answer-author { font-size: 0.85rem; color: var(--text-muted); margin-top: 6px; display: none; }
     .revealed .answer-author { display: block; }
     .revealed .correct-answer { border: 2px solid var(--correct); background: rgba(34, 197, 94, 0.1); }
     .player-list { list-style: none; padding: 0; margin: 0; }
-    .player-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #334155; }
-    .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; background: #ef4444; }
+    .player-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #334155; }
+    .player-info { display: flex; align-items: center; gap: 8px; }
+    .status-dot { height: 10px; width: 10px; border-radius: 50%; display: inline-block; background: #64748b; }
     .status-dot.ready { background: var(--correct); }
+    .btn-make-leader { width: auto; margin: 0; padding: 6px 10px; font-size: 0.75rem; background: #334155; color: #f8fafc; border: 1px solid #475569; }
+    .btn-make-leader:hover { background: var(--gold); color: #000; }
+    .top-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
   </style>
 </head>
 <body>
@@ -47,25 +53,26 @@
     <h2>Nobody is Perfect</h2>
     <input type="text" id="username" placeholder="Dein Name" maxlength="15">
     <input type="text" id="roomCode" placeholder="Raum-Code (z.B. NIP42)" style="text-transform: uppercase;">
-    <button onclick="joinRoom()">Raum betreten / erstellen</button>
+    <button onclick="handleJoinClick()">Raum betreten / erstellen</button>
   </div>
 
-  <!-- Screen: Lobby & Spiel -->
+  <!-- Screen: Spiel / Lobby -->
   <div id="screen-game" style="display: none;">
-    <div class="card" style="display: flex; justify-content: space-between; align-items: center;">
-      <div>
-        <span style="color: var(--text-muted);">Raum:</span> <strong id="lbl-room"></strong>
-      </div>
-      <div>
-        <span id="role-badge" class="badge">Mitspieler</span>
-      </div>
+    <div class="top-bar">
+      <div><span style="color: var(--text-muted);">Raum:</span> <strong id="lbl-room"></strong></div>
+      <button class="secondary" style="width: auto; margin: 0; padding: 4px 10px; font-size: 0.75rem;" onclick="leaveRoom()">Raum verlassen</button>
+    </div>
+
+    <div class="card" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+      <div>Spieler: <b id="lbl-player-name"></b></div>
+      <span id="role-badge" class="badge">Mitspieler</span>
     </div>
 
     <!-- ANSICHT FÜR DEN SPIELLEITER -->
     <div id="view-leader" style="display: none;">
       <div class="card">
         <h3>Du bist der Spielleiter! 👑</h3>
-        <p style="color: var(--text-muted); font-size: 0.9rem;">Lies die Frage vor und trage hier die <b>echte</b> Lösung ein:</p>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">Lies die Frage von der Karte vor und tippe hier die <b>echte</b> Lösung ein:</p>
         <textarea id="correctAnswerInput" rows="2" placeholder="Wahre Antwort von der Karte..."></textarea>
         <button id="btn-save-correct" onclick="submitCorrectAnswer()">Echte Antwort einloggen</button>
       </div>
@@ -74,52 +81,97 @@
         <h3>Eingegangene Antworten (<span id="count-answers">0</span>/<span id="count-players">0</span>)</h3>
         <div id="answers-container"><i>Warte auf Antworten...</i></div>
         <button id="btn-reveal" style="display: none; margin-top: 12px;" onclick="revealAnswers()">Auflösen & Autoren zeigen</button>
-        <button id="btn-next-round" style="display: none; margin-top: 6px;" class="secondary" onclick="nextRound()">Nächste Runde (Spielleiter weitergeben)</button>
+        <button id="btn-next-round" style="display: none; margin-top: 6px;" class="secondary" onclick="nextRound(true)">Nächste Runde (Reihum wechseln)</button>
       </div>
     </div>
 
-    <!-- ANSICHT FÜR NORMALE SPIELER -->
+    <!-- ANSICHT FÜR NORMALE MITSSPIELER -->
     <div id="view-player" style="display: none;">
       <div class="card">
         <h3>Deine erfundene Antwort</h3>
-        <p style="color: var(--text-muted); font-size: 0.9rem;">Spielleiter ist aktuell: <b id="current-leader-name">-</b></p>
+        <p style="color: var(--text-muted); font-size: 0.9rem;">Aktueller Spielleiter: <b id="current-leader-name">-</b></p>
         <textarea id="playerAnswerInput" rows="3" placeholder="Tippe hier deine glaubhafte Fake-Antwort ein..."></textarea>
         <button id="btn-submit-player" onclick="submitPlayerAnswer()">Antwort absenden</button>
         <p id="player-status-msg" style="text-align: center; color: var(--accent); display: none;">Antwort übermittelt! Warte auf den Spielleiter...</p>
       </div>
     </div>
 
-    <!-- Mitspieler-Status -->
+    <!-- MITSSPIELER-LISTE & MANUELLE LEITER-WAHL -->
     <div class="card">
-      <h3>Mitspieler</h3>
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+        <h3 style="margin: 0;">Mitspieler</h3>
+        <span style="font-size: 0.8rem; color: var(--text-muted);">Tippe 👑 zum Wechseln</span>
+      </div>
       <ul id="player-list" class="player-list"></ul>
     </div>
   </div>
 </div>
 
 <script>
-  let client, myName, room;
+  let client = null;
+  let myName = '';
+  let room = '';
   let players = []; 
   let currentLeaderIndex = 0;
-  let roundAnswers = []; // { text, author, isCorrect }
-  let hasSubmitted = false;
+  let roundAnswers = []; 
+  let readyPlayers = new Set();
 
-  function joinRoom() {
-    myName = document.getElementById('username').value.trim();
-    room = document.getElementById('roomCode').value.trim().toUpperCase();
-    if (!myName || !room) return alert('Bitte Name und Raum eingeben!');
+  const STORAGE_KEY_NAME = 'nip_player_name';
+  const STORAGE_KEY_ROOM = 'nip_room_code';
+
+  window.addEventListener('DOMContentLoaded', () => {
+    const savedName = sessionStorage.getItem(STORAGE_KEY_NAME);
+    const savedRoom = sessionStorage.getItem(STORAGE_KEY_ROOM);
+
+    if (savedName && savedRoom) {
+      document.getElementById('username').value = savedName;
+      document.getElementById('roomCode').value = savedRoom;
+      joinRoom(savedName, savedRoom);
+    }
+  });
+
+  function handleJoinClick() {
+    const nameInput = document.getElementById('username').value.trim();
+    const roomInput = document.getElementById('roomCode').value.trim().toUpperCase();
+
+    if (!nameInput || !roomInput) {
+      return alert('Bitte gib deinen Namen und einen Raum-Code ein!');
+    }
+
+    sessionStorage.setItem(STORAGE_KEY_NAME, nameInput);
+    sessionStorage.setItem(STORAGE_KEY_ROOM, roomInput);
+    joinRoom(nameInput, roomInput);
+  }
+
+  function joinRoom(name, roomCode) {
+    myName = name;
+    room = roomCode;
 
     document.getElementById('screen-auth').style.display = 'none';
     document.getElementById('screen-game').style.display = 'block';
     document.getElementById('lbl-room').innerText = room;
+    document.getElementById('lbl-player-name').innerText = myName;
 
     initMQTT();
   }
 
+  function leaveRoom() {
+    sessionStorage.removeItem(STORAGE_KEY_ROOM);
+    if (client && client.isConnected()) {
+      client.disconnect();
+    }
+    location.reload();
+  }
+
   function initMQTT() {
     const clientId = "nip_" + Math.random().toString(16).substr(2, 8);
-    // Verbindung über öffentlichen WebSocket-Broker (HiveMQ)
     client = new Paho.MQTT.Client("broker.hivemq.com", 8884, clientId);
+
+    client.onConnectionLost = (response) => {
+      console.warn("Verbindung verloren, verbinde neu...", response);
+      setTimeout(initMQTT, 2000);
+    };
+
     client.onMessageArrived = onMessage;
 
     client.connect({
@@ -132,13 +184,19 @@
   }
 
   function sendMsg(type, payload) {
+    if (!client || !client.isConnected()) return;
     const message = new Paho.MQTT.Message(JSON.stringify({ type, sender: myName, ...payload }));
     message.destinationName = `nip/${room}/${type}`;
     client.send(message);
   }
 
   function onMessage(message) {
-    const data = JSON.parse(message.payloadString);
+    let data;
+    try {
+      data = JSON.parse(message.payloadString);
+    } catch (e) {
+      return;
+    }
     const subTopic = message.destinationName.split('/').pop();
 
     if (subTopic === 'join') {
@@ -146,30 +204,45 @@
         players.push(data.name);
         renderPlayers();
       }
-      // Wenn ich Spielleiter bin, sende den aktuellen Zustand an den Neuen
+      // Der aktuelle Spielleiter antwortet mit dem Gesamtzustand
       if (isLeader()) {
-        sendMsg("sync_state", { players, currentLeaderIndex });
+        sendMsg("sync_state", { 
+          players, 
+          currentLeaderIndex, 
+          readyPlayers: Array.from(readyPlayers) 
+        });
       }
     }
 
     if (subTopic === 'sync_state') {
       players = data.players;
       currentLeaderIndex = data.currentLeaderIndex;
+      if (data.readyPlayers) {
+        readyPlayers = new Set(data.readyPlayers);
+      }
       renderPlayers();
       updateRoleViews();
     }
 
+    if (subTopic === 'set_leader') {
+      currentLeaderIndex = data.newLeaderIndex;
+      roundAnswers = [];
+      readyPlayers.clear();
+      resetRoundUI();
+      updateRoleViews();
+      renderPlayers();
+    }
+
     if (subTopic === 'answer_submitted') {
-      // Nur der Spielleiter sammelt die Antworten im Speicher
+      readyPlayers.add(data.sender);
       if (isLeader()) {
         roundAnswers.push({ text: data.text, author: data.sender, isCorrect: data.isCorrect || false });
         updateLeaderAnswerCount();
       }
-      updatePlayerReadyState(data.sender);
+      renderPlayers();
     }
 
     if (subTopic === 'broadcast_answers') {
-      // Spielleiter hat alle Antworten gemischt veröffentlicht
       displayAnswers(data.answers, false);
     }
 
@@ -179,8 +252,8 @@
 
     if (subTopic === 'next_round') {
       currentLeaderIndex = data.newLeaderIndex;
-      hasSubmitted = false;
       roundAnswers = [];
+      readyPlayers.clear();
       resetRoundUI();
       updateRoleViews();
       renderPlayers();
@@ -191,8 +264,13 @@
     return players[currentLeaderIndex] === myName;
   }
 
+  function assignLeader(targetIndex) {
+    if (targetIndex < 0 || targetIndex >= players.length) return;
+    sendMsg("set_leader", { newLeaderIndex: targetIndex });
+  }
+
   function updateRoleViews() {
-    const leaderName = players[currentLeaderIndex] || 'Niemand';
+    const leaderName = players[currentLeaderIndex] || 'Wird ermittelt...';
     document.getElementById('current-leader-name').innerText = leaderName;
 
     if (isLeader()) {
@@ -211,6 +289,7 @@
   function submitPlayerAnswer() {
     const text = document.getElementById('playerAnswerInput').value.trim();
     if (!text) return alert("Bitte eine Antwort eingeben!");
+
     sendMsg("answer_submitted", { text, isCorrect: false });
     document.getElementById('btn-submit-player').disabled = true;
     document.getElementById('player-status-msg').style.display = 'block';
@@ -218,19 +297,22 @@
 
   function submitCorrectAnswer() {
     const text = document.getElementById('correctAnswerInput').value.trim();
-    if (!text) return alert("Bitte die echte Antwort eintragen!");
+    if (!text) return alert("Bitte die echte Antwort von der Karte eingeben!");
+
+    readyPlayers.add(myName);
     roundAnswers.push({ text, author: "SPIELLEITUNG (Wahr)", isCorrect: true });
     document.getElementById('btn-save-correct').disabled = true;
     updateLeaderAnswerCount();
+    renderPlayers();
   }
 
   function updateLeaderAnswerCount() {
     document.getElementById('count-answers').innerText = roundAnswers.length;
     document.getElementById('count-players').innerText = players.length;
 
-    // Sobald alle Mitspieler + die echte Antwort da sind:
-    if (roundAnswers.length >= players.length) {
-      // Antworten mischen (Fisher-Yates)
+    // Wenn alle Mitspieler + die echte Antwort da sind:
+    if (roundAnswers.length >= players.length && players.length > 0) {
+      // Fisher-Yates-Shuffle
       const shuffled = [...roundAnswers].sort(() => Math.random() - 0.5);
       roundAnswers = shuffled;
       sendMsg("broadcast_answers", { answers: shuffled });
@@ -261,8 +343,11 @@
     document.getElementById('btn-next-round').style.display = 'block';
   }
 
-  function nextRound() {
-    const nextIdx = (currentLeaderIndex + 1) % players.length;
+  function nextRound(rotateLeader = true) {
+    let nextIdx = currentLeaderIndex;
+    if (rotateLeader && players.length > 0) {
+      nextIdx = (currentLeaderIndex + 1) % players.length;
+    }
     sendMsg("next_round", { newLeaderIndex: nextIdx });
   }
 
@@ -281,21 +366,41 @@
   function renderPlayers() {
     const list = document.getElementById('player-list');
     list.innerHTML = "";
+
     players.forEach((p, idx) => {
+      const isCurrentLeader = (idx === currentLeaderIndex);
+      const isReady = readyPlayers.has(p);
+
       const li = document.createElement('li');
       li.className = 'player-item';
-      li.innerHTML = `
-        <span>${escapeHtml(p)} ${idx === currentLeaderIndex ? '👑' : ''}</span>
-        <span id="dot-${p}" class="status-dot"></span>
+
+      const left = document.createElement('div');
+      left.className = 'player-info';
+      left.innerHTML = `
+        <span class="status-dot ${isReady ? 'ready' : ''}" title="${isReady ? 'Bereit' : 'Tippt noch'}"></span>
+        <span><b>${escapeHtml(p)}</b> ${isCurrentLeader ? '👑' : ''}</span>
       `;
+
+      const right = document.createElement('div');
+      if (!isCurrentLeader) {
+        const btn = document.createElement('button');
+        btn.className = 'btn-make-leader';
+        btn.innerText = '👑 Zum Leiter machen';
+        btn.onclick = () => assignLeader(idx);
+        right.appendChild(btn);
+      } else {
+        const badge = document.createElement('span');
+        badge.className = 'badge leader';
+        badge.innerText = 'Leitet';
+        right.appendChild(badge);
+      }
+
+      li.appendChild(left);
+      li.appendChild(right);
       list.appendChild(li);
     });
-    document.getElementById('count-players').innerText = players.length;
-  }
 
-  function updatePlayerReadyState(player) {
-    const dot = document.getElementById(`dot-${player}`);
-    if (dot) dot.classList.add('ready');
+    document.getElementById('count-players').innerText = players.length;
   }
 
   function escapeHtml(str) {
