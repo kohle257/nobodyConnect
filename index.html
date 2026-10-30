@@ -63,30 +63,24 @@
       font-size: 0.85rem;
       color: var(--text-muted);
     }
-    .meta-group {
+    .meta-group-left {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
     }
-    .meta-group b {
+    .meta-group-left b {
       color: var(--text);
       font-weight: 600;
+    }
+    .meta-group-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
     }
     .badge { display: inline-block; padding: 2px 7px; border-radius: 6px; font-size: 0.75rem; font-weight: bold; background: #334155; color: var(--text); }
     .badge.leader { background: var(--gold); color: #000; }
     
-    .btn-icon {
-      background: #334155;
-      color: var(--text);
-      border: 1px solid #475569;
-      width: auto;
-      margin: 0;
-      padding: 3px 8px;
-      font-size: 0.85rem;
-      border-radius: 6px;
-      cursor: pointer;
-    }
-    .btn-leave {
+    .btn-top {
       background: transparent;
       color: var(--text-muted);
       border: 1px solid #334155;
@@ -95,8 +89,10 @@
       padding: 4px 8px;
       font-size: 0.75rem;
       border-radius: 6px;
+      cursor: pointer;
     }
-    .btn-leave:hover { color: #f87171; border-color: #f87171; }
+    .btn-top:hover { color: var(--text); border-color: #64748b; }
+    .btn-top.leave:hover { color: #f87171; border-color: #f87171; }
 
     .answer-card { background: #334155; border-radius: 8px; padding: 14px; margin-bottom: 10px; font-size: 1.15rem; line-height: 1.4; }
     .answer-author { font-size: 0.85rem; color: var(--text-muted); margin-top: 6px; display: none; }
@@ -155,16 +151,17 @@
 
   <!-- Game Screen -->
   <div id="screen-game" style="display: none;">
-    <!-- Dezente Meta-Zeile mit QR-Button -->
+    <!-- Dezente Meta-Zeile: Ohne Spieler/Leitung-Hinweis, Buttons rechts zusammen -->
     <div class="top-meta-bar">
-      <div class="meta-group">
+      <div class="meta-group-left">
         <span>Raum: <b id="lbl-room"></b></span>
-        <button class="btn-icon" onclick="openQrModal()" title="QR-Code zum Einladen anzeigen">📱 QR</button>
         <span>•</span>
         <span>Ich: <b id="lbl-player-name"></b></span>
-        <span id="role-badge" class="badge">Mitspieler</span>
       </div>
-      <button class="btn-leave" onclick="leaveRoom()">Verlassen</button>
+      <div class="meta-group-right">
+        <button class="btn-top" onclick="openQrModal()" title="QR-Code anzeigen">📱 QR</button>
+        <button class="btn-top leave" onclick="leaveRoom()">Verlassen</button>
+      </div>
     </div>
 
     <!-- SPIELLEITER VIEW -->
@@ -179,7 +176,10 @@
       <div class="card">
         <h3>Antworten (<span id="count-answers">0</span>/<span id="count-players">0</span>)</h3>
         <div id="answers-container"><i>Warte auf Antworten...</i></div>
-        <button id="btn-reveal" style="display: none; margin-top: 12px;" onclick="revealAnswers()">Auflösen & Autoren zeigen</button>
+        
+        <!-- Aktionen für den Spielleiter bei Vollständigkeit -->
+        <button id="btn-shuffle-again" style="display: none; margin-top: 12px;" class="secondary" onclick="reshuffleAnswers()">🔀 Neu mischen</button>
+        <button id="btn-reveal" style="display: none; margin-top: 6px;" onclick="revealAnswers()">Auflösen & Autoren zeigen</button>
         <button id="btn-next-round" style="display: none; margin-top: 6px;" class="secondary" onclick="nextRound(true)">Nächste Runde (Reihum)</button>
       </div>
     </div>
@@ -237,13 +237,12 @@
   }
 
   window.addEventListener('DOMContentLoaded', () => {
-    // 1. Prüfen, ob Raum per URL-Parameter übergeben wurde (Scan via QR-Code)
     const urlParams = new URLSearchParams(window.location.search);
     const roomParam = urlParams.get('room');
 
     if (roomParam) {
       document.getElementById('roomCode').value = roomParam.toUpperCase();
-      document.getElementById('roomCode').readOnly = true; // Sperren, damit kein Tippfehler passiert
+      document.getElementById('roomCode').readOnly = true;
       document.getElementById('username').focus();
     } else {
       const savedRoom = sessionStorage.getItem(STORAGE_KEY_ROOM);
@@ -253,7 +252,6 @@
     const savedName = sessionStorage.getItem(STORAGE_KEY_NAME);
     if (savedName) document.getElementById('username').value = savedName;
 
-    // Automatischer Reconnect bei Refresh
     const effectiveRoom = roomParam || sessionStorage.getItem(STORAGE_KEY_ROOM);
     if (savedName && effectiveRoom) {
       joinRoom(savedName, effectiveRoom.toUpperCase());
@@ -290,18 +288,15 @@
     if (client && client.isConnected()) {
       client.disconnect();
     }
-    // URL-Parameter entfernen beim Verlassen
     window.location.href = window.location.pathname;
   }
 
-  // QR-Code Generierung & Modal
   function openQrModal() {
     const modal = document.getElementById('qr-modal');
     const container = document.getElementById('qrcode-container');
     document.getElementById('qr-room-lbl').innerText = room;
 
     container.innerHTML = "";
-    // Erzeugt die genaue URL mit ?room=ROOMCODE
     const joinUrl = `${window.location.origin}${window.location.pathname}?room=${encodeURIComponent(room)}`;
 
     qrCodeInstance = new QRCode(container, {
@@ -456,13 +451,9 @@
     document.getElementById('current-leader-name').innerText = currentLeaderName || '-';
 
     if (isLeader()) {
-      document.getElementById('role-badge').innerText = "Leitung 👑";
-      document.getElementById('role-badge').className = "badge leader";
       document.getElementById('view-leader').style.display = 'block';
       document.getElementById('view-player').style.display = 'none';
     } else {
-      document.getElementById('role-badge').innerText = "Spieler";
-      document.getElementById('role-badge').className = "badge";
       document.getElementById('view-leader').style.display = 'none';
       document.getElementById('view-player').style.display = 'block';
     }
@@ -499,11 +490,22 @@
     document.getElementById('count-players').innerText = players.length;
 
     if (roundAnswers.length >= players.length && players.length > 0) {
-      const shuffled = [...roundAnswers].sort(() => Math.random() - 0.5);
-      roundAnswers = shuffled;
-      sendMsg("broadcast_answers", { answers: shuffled });
+      reshuffleAnswers();
+      document.getElementById('btn-shuffle-again').style.display = 'block';
       document.getElementById('btn-reveal').style.display = 'block';
     }
+  }
+
+  // Fisher-Yates-Shuffle & Live-Update
+  function reshuffleAnswers() {
+    if (!isLeader() || roundAnswers.length === 0) return;
+    const shuffled = [...roundAnswers];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    roundAnswers = shuffled;
+    sendMsg("broadcast_answers", { answers: shuffled });
   }
 
   function displayAnswers(answers, isRevealed) {
@@ -525,6 +527,7 @@
 
   function revealAnswers() {
     sendMsg("reveal", { answers: roundAnswers });
+    document.getElementById('btn-shuffle-again').style.display = 'none';
     document.getElementById('btn-reveal').style.display = 'none';
     document.getElementById('btn-next-round').style.display = 'block';
   }
@@ -545,6 +548,7 @@
     document.getElementById('btn-submit-player').disabled = false;
     document.getElementById('btn-save-correct').disabled = false;
     document.getElementById('player-status-msg').style.display = 'none';
+    document.getElementById('btn-shuffle-again').style.display = 'none';
     document.getElementById('btn-reveal').style.display = 'none';
     document.getElementById('btn-next-round').style.display = 'none';
     document.getElementById('answers-container').innerHTML = "<i>Warte auf Antworten...</i>";
