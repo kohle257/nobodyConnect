@@ -128,4 +128,324 @@
 
   function handleJoinClick() {
     const nameInput = document.getElementById('username').value.trim();
-    const roomInput = document.getElementById('
+    const roomInput = document.getElementById('roomCode').value.trim().toUpperCase();
+
+    if (!nameInput || !roomInput) {
+      return alert('Bitte gib deinen Namen und einen Raum-Code ein!');
+    }
+
+    sessionStorage.setItem(STORAGE_KEY_NAME, nameInput);
+    sessionStorage.setItem(STORAGE_KEY_ROOM, roomInput);
+    joinRoom(nameInput, roomInput);
+  }
+
+  function joinRoom(name, roomCode) {
+    myName = name;
+    room = roomCode;
+
+    document.getElementById('screen-auth').style.display = 'none';
+    document.getElementById('screen-game').style.display = 'block';
+    document.getElementById('lbl-room').innerText = room;
+    document.getElementById('lbl-player-name').innerText = myName;
+
+    initMQTT();
+  }
+
+  function leaveRoom() {
+    sessionStorage.removeItem(STORAGE_KEY_NAME);
+    sessionStorage.removeItem(STORAGE_KEY_ROOM);
+    if (client && client.isConnected()) {
+      client.disconnect();
+    }
+    location.reload();
+  }
+
+  function initMQTT() {
+    // Feste Client-ID pro Tab-Sitzung, verhindert doppeltes Beitreten bei Reconnects
+    let tabId = sessionStorage.getItem('nip_client_id');
+    if (!tabId) {
+      tabId = "nip_" + Math.random().toString(16).substr(2, 8);
+      sessionStorage.setItem('nip_client_id', tabId);
+    }
+
+    client = new Paho.MQTT.Client("broker.hivemq.com", 8884, tabId);
+
+    client.onConnectionLost = (response) => {
+      console.warn("Verbindung verloren, verbinde neu...", response);
+      setTimeout(initMQTT, 1500);
+    };
+
+    client.onMessageArrived = onMessage;
+
+    client.connect({
+      useSSL: true,
+      cleanSession: true,
+      onSuccess: () => {
+        client.subscribe(`nip/${room}/#`);
+        // Informiere den Raum über Beitritt/Reload
+        sendMsg("ping_presence", { name: myName });
+      }
+    });
+  }
+
+  function sendMsg(type, payload) {
+    if (!client || !client.isConnected()) return;
+    const message = new Paho.MQTT.Message(JSON.stringify({ type, sender: myName, ...payload }));
+    message.destinationName = `nip/${room}/${type}`;
+    client.send(message);
+  }
+
+  function isLeader() {
+    return currentLeaderName === myName;
+  }
+
+  function onMessage(message) {
+    let data;
+    try {
+      data = JSON.parse(message.payloadString);
+    } catch (e) {
+      return;
+    }
+    const subTopic = message.destinationName.split('/').pop();
+
+    if (subTopic === 'ping_presence') {
+      if (!players.includes(data.name)) {
+        players.push(data.name);
+      }
+      // Falls noch kein Leiter existiert (Raum-Ersteller), wird der erste zum Leiter
+      if (!currentLeaderName) {
+        currentLeaderName = players[0];
+      }
+
+      // Wenn ich der Spielleiter bin, sende ich den autoritativen Zustand zurück
+      if (isLeader()) {
+        sendMsg("state_sync", {
+          players,
+          currentLeaderName,
+          submittedPlayers
+        });
+      }
+      renderPlayers();
+      updateRoleViews();
+    }
+
+    if (subTopic === 'state_sync') {
+      // Zusammenführen aller bekannten Spieler (verhindert Verluste)
+      data.players.forEach(p => {
+        if (!players.includes(p)) players.push(p);
+      });
+      if (data.currentLeaderName) {
+        currentLeaderName = data.currentLeaderName;
+      }
+      submittedPlayers = data.submittedPlayers || [];
+
+      // Prüfen, ob lokaler Spieler bereits abgegeben hat
+      if (submittedPlayers.includes(myName)) {
+        lockPlayerSubmissionUI();
+      }
+
+      renderPlayers();
+      updateRoleViews();
+    }
+
+    if (subTopic === 'set_leader') {
+      currentLeaderName = data.newLeaderName;
+      roundAnswers = [];
+      submittedPlayers = [];
+      resetRoundUI();
+      renderPlayers();
+      updateRoleViews();
+    }
+
+    if (subTopic === 'answer_submitted') {
+      if (!submittedPlayers.includes(data.sender)) {
+        submittedPlayers.push(data.sender);
+      }
+      
+      // Nur der autoritative Spielleiter nimmt die Antworten auf
+      if (isLeader()) {
+        // Bestehende Antwort des Spielers überschreiben oder neu hinzufügen
+        const existingIdx = roundAnswers.findIndex(a => a.author === data.sender);
+        if (existingIdx >= 0) {
+          roundAnswers[existingIdx] = { text: data.text, author: data.sender, isCorrect: data.isCorrect || false };
+        } else {
+          roundAnswers.push({ text: data.text, author: data.sender, isCorrect: data.isCorrect || false });
+        }
+        updateLeaderAnswerCount();
+
+        // Zustand synchron halten
+        sendMsg("state_sync", { players, currentLeaderName, submittedPlayers });
+      }
+
+      renderPlayers();
+    }
+
+    if (subTopic === 'broadcast_answers') {
+      displayAnswers(data.answers, false);
+    }
+
+    if (subTopic === 'reveal') {
+      displayAnswers(data.answers, true);
+    }
+
+    if (subTopic === 'next_round') {
+      currentLeaderName = data.newLeaderName;
+      roundAnswers = [];
+      submittedPlayers = [];
+      resetRoundUI();
+      renderPlayers();
+      updateRoleViews();
+    }
+  }
+
+  function assignLeader(name) {
+    if (!players.includes(name)) return;
+    sendMsg("set_leader", { newLeaderName: name });
+  }
+
+  function updateRoleViews() {
+    document.getElementById('current-leader-name').innerText = currentLeaderName || 'Noch nicht gewählt';
+
+    if (isLeader()) {
+      document.getElementById('role-badge').innerText = "Spielleiter 👑";
+      document.getElementById('role-badge').className = "badge leader";
+      document.getElementById('view-leader').style.display = 'block';
+      document.getElementById('view-player').style.display = 'none';
+    } else {
+      document.getElementById('role-badge').innerText = "Mitspieler";
+      document.getElementById('role-badge').className = "badge";
+      document.getElementById('view-leader').style.display = 'none';
+      document.getElementById('view-player').style.display = 'block';
+    }
+  }
+
+  function submitPlayerAnswer() {
+    const text = document.getElementById('playerAnswerInput').value.trim();
+    if (!text) return alert("Bitte eine Antwort eingeben!");
+
+    sendMsg("answer_submitted", { text, isCorrect: false });
+    lockPlayerSubmissionUI();
+  }
+
+  function lockPlayerSubmissionUI() {
+    document.getElementById('btn-submit-player').disabled = true;
+    document.getElementById('player-status-msg').style.display = 'block';
+  }
+
+  function submitCorrectAnswer() {
+    const text = document.getElementById('correctAnswerInput').value.trim();
+    if (!text) return alert("Bitte die echte Antwort von der Karte eingeben!");
+
+    if (!submittedPlayers.includes(myName)) submittedPlayers.push(myName);
+    roundAnswers.push({ text, author: "SPIELLEITUNG (Wahr)", isCorrect: true });
+    document.getElementById('btn-save-correct').disabled = true;
+
+    updateLeaderAnswerCount();
+    renderPlayers();
+    sendMsg("state_sync", { players, currentLeaderName, submittedPlayers });
+  }
+
+  function updateLeaderAnswerCount() {
+    document.getElementById('count-answers').innerText = roundAnswers.length;
+    document.getElementById('count-players').innerText = players.length;
+
+    // Wenn alle Spieler (Mitspieler + echte Antwort des Spielleiters) abgegeben haben
+    if (roundAnswers.length >= players.length && players.length > 0) {
+      const shuffled = [...roundAnswers].sort(() => Math.random() - 0.5);
+      roundAnswers = shuffled;
+      sendMsg("broadcast_answers", { answers: shuffled });
+      document.getElementById('btn-reveal').style.display = 'block';
+    }
+  }
+
+  function displayAnswers(answers, isRevealed) {
+    const container = document.getElementById('answers-container');
+    container.innerHTML = "";
+    if (isRevealed) container.classList.add('revealed');
+    else container.classList.remove('revealed');
+
+    answers.forEach((ans, idx) => {
+      const div = document.createElement('div');
+      div.className = `answer-card ${ans.isCorrect ? 'correct-answer' : ''}`;
+      div.innerHTML = `
+        <div><b>${idx + 1}.</b> ${escapeHtml(ans.text)}</div>
+        <div class="answer-author">${ans.isCorrect ? '⭐ RICHTIGE ANTWORT' : 'Autor: ' + escapeHtml(ans.author)}</div>
+      `;
+      container.appendChild(div);
+    });
+  }
+
+  function revealAnswers() {
+    sendMsg("reveal", { answers: roundAnswers });
+    document.getElementById('btn-reveal').style.display = 'none';
+    document.getElementById('btn-next-round').style.display = 'block';
+  }
+
+  function nextRound(rotateLeader = true) {
+    let nextLeader = currentLeaderName;
+    if (rotateLeader && players.length > 0) {
+      const currentIdx = players.indexOf(currentLeaderName);
+      const nextIdx = (currentIdx + 1) % players.length;
+      nextLeader = players[nextIdx];
+    }
+    sendMsg("next_round", { newLeaderName: nextLeader });
+  }
+
+  function resetRoundUI() {
+    document.getElementById('playerAnswerInput').value = "";
+    document.getElementById('correctAnswerInput').value = "";
+    document.getElementById('btn-submit-player').disabled = false;
+    document.getElementById('btn-save-correct').disabled = false;
+    document.getElementById('player-status-msg').style.display = 'none';
+    document.getElementById('btn-reveal').style.display = 'none';
+    document.getElementById('btn-next-round').style.display = 'none';
+    document.getElementById('answers-container').innerHTML = "<i>Warte auf Antworten...</i>";
+    document.getElementById('count-answers').innerText = "0";
+  }
+
+  function renderPlayers() {
+    const list = document.getElementById('player-list');
+    list.innerHTML = "";
+
+    players.forEach((p) => {
+      const isCurrentLeader = (p === currentLeaderName);
+      const isSubmitted = submittedPlayers.includes(p);
+
+      const li = document.createElement('li');
+      li.className = 'player-item';
+
+      const left = document.createElement('div');
+      left.className = 'player-info';
+      left.innerHTML = `
+        <span class="status-dot ${isSubmitted ? 'ready' : ''}" title="${isSubmitted ? 'Abgegeben' : 'Tippt noch'}"></span>
+        <span><b>${escapeHtml(p)}</b> ${isCurrentLeader ? '👑' : ''}</span>
+      `;
+
+      const right = document.createElement('div');
+      if (!isCurrentLeader) {
+        const btn = document.createElement('button');
+        btn.className = 'btn-make-leader';
+        btn.innerText = '👑 Spielleiter machen';
+        btn.onclick = () => assignLeader(p);
+        right.appendChild(btn);
+      } else {
+        const badge = document.createElement('span');
+        badge.className = 'badge leader';
+        badge.innerText = 'Leitet';
+        right.appendChild(badge);
+      }
+
+      li.appendChild(left);
+      li.appendChild(right);
+      list.appendChild(li);
+    });
+
+    document.getElementById('count-players').innerText = players.length;
+  }
+
+  function escapeHtml(str) {
+    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+</script>
+</body>
+</html>
